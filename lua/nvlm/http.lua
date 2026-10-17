@@ -1,11 +1,12 @@
 local M = {}
 
---- POST a JSON body with curl. `cb(decoded, err)` runs on the main loop.
+--- POST a JSON body with curl and stream the response line by line.
+--- `on_line(line)` and `on_exit(err)` run on the main loop, in order.
 ---@return vim.SystemObj
-function M.post_json(url, body, opts, cb)
+function M.stream(url, body, opts, on_line, on_exit)
   opts = opts or {}
   local cmd = {
-    "curl", "-sS", "--fail-with-body",
+    "curl", "-sS", "-N", "--fail-with-body",
     "-X", "POST", url,
     "-H", "Content-Type: application/json",
     "--data-binary", "@-",
@@ -17,20 +18,36 @@ function M.post_json(url, body, opts, cb)
     vim.list_extend(cmd, { "-H", k .. ": " .. v })
   end
 
-  return vim.system(cmd, { stdin = vim.json.encode(body), text = true }, function(res)
+  -- stdout arrives in arbitrary chunks; only hand complete lines to on_line.
+  local pending = ""
+  local function on_stdout(_, chunk)
+    if not chunk then
+      return
+    end
+    pending = pending .. chunk
+    local lines = vim.split(pending, "\n", { plain = true })
+    pending = table.remove(lines)
     vim.schedule(function()
+      for _, line in ipairs(lines) do
+        if line ~= "" then
+          on_line(line)
+        end
+      end
+    end)
+  end
+
+  return vim.system(cmd, { stdin = vim.json.encode(body), stdout = on_stdout, text = true }, function(res)
+    vim.schedule(function()
+      if pending ~= "" then
+        on_line(pending)
+      end
       if res.signal ~= 0 then
-        return cb(nil, "cancelled")
+        return on_exit("cancelled")
       end
       if res.code ~= 0 then
-        local msg = vim.trim(res.stdout ~= "" and res.stdout or res.stderr)
-        return cb(nil, ("curl exited %d: %s"):format(res.code, msg))
+        return on_exit(("curl exited %d: %s"):format(res.code, vim.trim(res.stderr or "")))
       end
-      local ok, decoded = pcall(vim.json.decode, res.stdout)
-      if not ok then
-        return cb(nil, "invalid JSON response: " .. res.stdout)
-      end
-      cb(decoded)
+      on_exit()
     end)
   end)
 end

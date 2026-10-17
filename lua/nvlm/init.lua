@@ -42,20 +42,23 @@ function M.run(opts)
   table.insert(messages, user_msg)
 
   ui.open(cfg.ui)
-  local response_start = ui.begin_entry({
+  local entry = ui.begin_entry({
     "## " .. comment,
     ("`%s:%d-%d`"):format(sel.filename, sel.start_line, sel.end_line),
   })
 
-  job = provider.request(messages, provider_cfg, function(text, err)
+  local chunks = {}
+  job = provider.request(messages, provider_cfg, function(text)
+    table.insert(chunks, text)
+    ui.append_entry(entry, text)
+  end, function(err)
     job = nil
-    if err then
-      ui.finish_entry(response_start, { "**error:** " .. err })
-      return
+    ui.finish_entry(entry, err)
+    -- Only completed exchanges become part of the conversation.
+    if not err then
+      table.insert(history, user_msg)
+      table.insert(history, { role = "assistant", content = table.concat(chunks) })
     end
-    table.insert(history, user_msg)
-    table.insert(history, { role = "assistant", content = text })
-    ui.finish_entry(response_start, vim.split(vim.trim(text), "\n"))
   end)
 end
 
