@@ -1,7 +1,8 @@
 local M = {}
 
--- buf: the read-only chat log; input_buf: the editable prompt below it.
-local state = { buf = nil, input_buf = nil }
+-- buf: the read-only chat log; input_buf: the editable prompt below it;
+-- status: the active selection's status, shown in the input pane's winbar.
+local state = { buf = nil, input_buf = nil, status = nil }
 
 local ns = vim.api.nvim_create_namespace("nvlm_log")
 
@@ -22,6 +23,8 @@ local function define_highlights()
     NvlmBullet = "Normal",
     NvlmEdit = "DiagnosticOk",
     NvlmError = "DiagnosticError",
+    NvlmSelection = "DiagnosticInfo",
+    NvlmModified = "DiagnosticWarn",
   }) do
     vim.api.nvim_set_hl(0, group, { link = link, default = true })
   end
@@ -142,6 +145,9 @@ local function get_buf()
   for _, lhs in ipairs({ "i", "a", "o", "<CR>" }) do
     vim.keymap.set("n", lhs, M.focus_input, { buffer = buf, nowait = true, desc = "Ask nvlm a follow-up" })
   end
+  vim.keymap.set("n", "gs", function()
+    require("nvlm.edit").jump()
+  end, { buffer = buf, desc = "Go to the active selection" })
   state.buf = buf
   return buf
 end
@@ -157,6 +163,31 @@ local function get_input_buf()
   vim.keymap.set("n", "q", close, { buffer = buf, nowait = true, desc = "Close nvlm" })
   state.input_buf = buf
   return buf
+end
+
+local function winbar()
+  local bar = " nvlm"
+  local status = state.status
+  if status then
+    local where = status.where:gsub("%%", "%%%%")
+    if status.state == "deleted" then
+      bar = bar .. " · %#NvlmError#selection deleted%*"
+    elseif status.state == "modified" then
+      bar = bar .. " · " .. where .. " %#NvlmModified#modified%*"
+    else
+      bar = bar .. " · " .. where
+    end
+  end
+  return bar .. "  %#Comment#<CR> send · <C-j> newline"
+end
+
+---@param status table|nil from nvlm.edit.status
+function M.set_status(status)
+  state.status = status
+  local win = find_win(state.input_buf)
+  if win then
+    vim.wo[win].winbar = winbar()
+  end
 end
 
 local function style(win)
@@ -190,7 +221,7 @@ function M.open()
     })
     style(input_win)
     vim.wo[input_win].winfixheight = true
-    vim.wo[input_win].winbar = " nvlm  %#Comment#<CR> send · <C-j> newline"
+    vim.wo[input_win].winbar = winbar()
   end
 end
 

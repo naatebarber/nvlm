@@ -66,6 +66,7 @@ The conversation is kept until Neovim exits or you run `:LmReset`.
 | Where | Key | Action |
 |---|---|---|
 | Chat log | `i` `a` `o` `<CR>` | Focus the input pane |
+| Chat log | `gs` | Go to the active selection |
 | Input pane | `<CR>` (normal & insert) | Send |
 | Input pane | `<C-j>` (insert) | New line |
 | Either | `q` | Close the chat pane and the input pane |
@@ -77,6 +78,15 @@ Set `vim.g.nvlm_no_abbrev = true` before the plugin loads to disable the `:lm` �
 When you run `:Lm` on a selection, those lines become the active selection. An extmark (a position marker that Neovim moves as you edit) tracks them, so the right lines get edited even if you change other parts of the file while chatting.
 
 While a selection is active, the model has a `replace_selection` tool. Calling it replaces the whole selection with new code as a single undo step, and the log records the edit along with the new code. After an edit, the selection covers the new code, so you can keep asking for changes.
+
+### Keeping the model in sync
+
+The plugin follows the active selection live as you work:
+
+- A `▎` in the sign column marks the selected lines in your code.
+- The input pane's top bar shows where the selection is now (`file.py:7-11`). It adds `modified` if the contents differ from what the model last saw, or says `selection deleted` if the lines are gone.
+
+Nothing is sent to the model until your next message. Then, if the selection changed or moved since the model last saw it (you edited it, undid its edit, or added lines above it), the current code goes along with your message. The log marks this as `⎿ file.py:7-11 (updated)`. If the selection was deleted, the model is told, and it can no longer edit. If a request fails or is cancelled, the pending update is kept for the next message.
 
 The model decides when to edit. Asking a question gets an answer, and asking for a change gets an edit. Saying "don't change anything" works as you'd expect.
 
@@ -154,9 +164,10 @@ These groups are linked by default and can be overridden:
 | `NvlmBullet` | `Normal` | Response bullets |
 | `NvlmEdit` | `DiagnosticOk` | Edit bullets |
 | `NvlmError` | `DiagnosticError` | Errors |
+| `NvlmSelection` | `DiagnosticInfo` | Sign-column bar on the active selection |
+| `NvlmModified` | `DiagnosticWarn` | `modified` in the input pane's top bar |
 
 ## Limitations
 
 - Selections are always whole lines.
-- The model doesn't see edits you make to the selection by hand until you run `:Lm` on it again.
 - One request at a time.

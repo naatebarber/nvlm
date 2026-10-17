@@ -10,6 +10,8 @@ local M = {}
 local history = {}
 local job = nil
 
+edit.on_status(ui.set_status)
+
 function M.setup(opts)
   config.setup(opts)
 end
@@ -74,21 +76,33 @@ function M.send(sel, comment)
     return false
   end
 
+  -- Build the message, bringing the model up to date on the active selection if
+  -- it changed (or was deleted) since the model last saw it.
+  local content, ref
+  local deleted = not sel and edit.is_deleted()
   if sel then
     edit.set_target(sel)
+    content = prompt.user_message(sel, comment)
+    ref = ("%s:%d-%d"):format(sel.filename, sel.start_line, sel.end_line)
+  elseif deleted then
+    content = prompt.selection_deleted .. "\n\n" .. comment
+    ref = "selection deleted"
+  elseif edit.changed() then
+    local snap = edit.snapshot()
+    edit.sending(snap)
+    content = prompt.selection_update(snap, comment)
+    ref = ("%s:%d-%d (updated)"):format(snap.filename, snap.start_line, snap.end_line)
+  else
+    content = comment
   end
-
-  local user_msg = { role = "user", content = sel and prompt.user_message(sel, comment) or comment }
+  local user_msg = { role = "user", content = content }
 
   local messages = { { role = "system", content = cfg.system_prompt } }
   vim.list_extend(messages, history)
   table.insert(messages, user_msg)
 
   ui.open()
-  local entry = ui.begin_entry(
-    vim.split(comment, "\n", { plain = true }),
-    sel and ("%s:%d-%d"):format(sel.filename, sel.start_line, sel.end_line)
-  )
+  local entry = ui.begin_entry(vim.split(comment, "\n", { plain = true }), ref)
 
   local chunks, calls = {}, {}
   job = provider.request({
@@ -107,7 +121,13 @@ function M.send(sel, comment)
       ui.finish_entry(entry, err)
       -- Only completed exchanges become part of the conversation.
       if err then
+        edit.abort()
         return
+      end
+      if deleted then
+        edit.clear_target()
+      else
+        edit.confirm()
       end
       local reply = { role = "assistant", content = table.concat(chunks) }
       if #calls > 0 then
