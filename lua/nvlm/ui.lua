@@ -3,6 +3,31 @@ local M = {}
 -- buf: the read-only chat log; input_buf: the editable prompt below it.
 local state = { buf = nil, input_buf = nil }
 
+local ns = vim.api.nvim_create_namespace("nvlm_log")
+
+-- Log layout (Claude Code style): every line is indented two spaces, and an item's
+-- first line gets a marker overlaid on that indent, so wrapped text lines up under it.
+local markers = {
+  prompt = { ">", "NvlmPrompt" },
+  pending = { "⏺", "NvlmPending" },
+  text = { "⏺", "NvlmBullet" },
+  edit = { "⏺", "NvlmEdit" },
+  error = { "⏺", "NvlmError" },
+}
+
+local function define_highlights()
+  for group, link in pairs({
+    NvlmPrompt = "Comment",
+    NvlmPending = "Comment",
+    NvlmBullet = "Normal",
+    NvlmEdit = "DiagnosticOk",
+    NvlmError = "DiagnosticError",
+  }) do
+    vim.api.nvim_set_hl(0, group, { link = link, default = true })
+  end
+end
+define_highlights()
+
 local function find_win(buf)
   if not buf then
     return nil
@@ -23,9 +48,11 @@ local function close()
   end
 end
 
+local group = vim.api.nvim_create_augroup("nvlm_ui", { clear = true })
+
 -- Closing either pane closes the other.
 vim.api.nvim_create_autocmd("WinClosed", {
-  group = vim.api.nvim_create_augroup("nvlm_ui", { clear = true }),
+  group = group,
   callback = function(args)
     local win = tonumber(args.match)
     local buf = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win)
@@ -35,14 +62,45 @@ vim.api.nvim_create_autocmd("WinClosed", {
   end,
 })
 
+-- Colorschemes clear highlight groups; restore our default links.
+vim.api.nvim_create_autocmd("ColorScheme", { group = group, callback = define_highlights })
+
 local function is_empty(buf)
   return vim.api.nvim_buf_line_count(buf) == 1 and vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == ""
 end
 
-local function set_lines(buf, start, lines)
+local function modify(buf, fn)
   vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, start, -1, false, lines)
+  fn()
   vim.bo[buf].modifiable = false
+end
+
+local function indent(lines)
+  return vim.tbl_map(function(line)
+    return line == "" and "" or "  " .. line
+  end, lines)
+end
+
+--- Append lines to the end of the log; returns the row of the first one.
+local function append_lines(buf, lines)
+  local start = is_empty(buf) and 0 or vim.api.nvim_buf_line_count(buf)
+  modify(buf, function()
+    vim.api.nvim_buf_set_lines(buf, start, -1, false, lines)
+  end)
+  return start
+end
+
+local function mark(buf, row, kind, id)
+  return vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {
+    id = id,
+    virt_text = { markers[kind] },
+    virt_text_pos = "overlay",
+  })
+end
+
+local function highlight_line(buf, row, hl_group)
+  local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
+  return vim.api.nvim_buf_set_extmark(buf, ns, row, 0, { end_col = #line, hl_group = hl_group })
 end
 
 local function scroll_to_end(buf)
@@ -104,6 +162,7 @@ end
 local function style(win)
   vim.wo[win].wrap = true
   vim.wo[win].linebreak = true
+  vim.wo[win].breakindent = true
   vim.wo[win].number = false
   vim.wo[win].relativenumber = false
   vim.wo[win].signcolumn = "no"
@@ -141,27 +200,51 @@ function M.focus_input()
   vim.cmd("startinsert!")
 end
 
---- Append a new exchange header with a placeholder for the response.
+--- Append the user's prompt (and the selection it refers to) with a placeholder
+--- for the response.
+---@param prompt_lines string[]
+---@param ref string|nil e.g. "file.py:3-7"
 ---@return table entry handle for append_entry / finish_entry
-function M.begin_entry(header_lines)
+function M.begin_entry(prompt_lines, ref)
   local buf = get_buf()
-  local lines = {}
-  if not is_empty(buf) then
-    vim.list_extend(lines, { "", "---", "" })
+  local header = indent(prompt_lines)
+  if ref then
+    table.insert(header, "  ⎿ " .. ref)
   end
-  vim.list_extend(lines, header_lines)
-  vim.list_extend(lines, { "" })
 
-  local start = is_empty(buf) and 0 or vim.api.nvim_buf_line_count(buf)
-  set_lines(buf, start, lines)
-  local response_start = vim.api.nvim_buf_line_count(buf)
-  set_lines(buf, response_start, { "_thinking…_" })
+  local lines = is_empty(buf) and {} or { "" }
+  local first = #lines
+  vim.list_extend(lines, header)
+  vim.list_extend(lines, { "", "  thinking…" })
+
+  local start = append_lines(buf, lines)
+  for row = start + first, start + first + #header - 1 do
+    highlight_line(buf, row, "NvlmPrompt")
+  end
+  mark(buf, start + first, "prompt")
+
+  local row = start + #lines - 1
+  local entry = {
+    row = row,
+    started = false,
+    mark = mark(buf, row, "pending"),
+    placeholder_hl = highlight_line(buf, row, "NvlmPending"),
+  }
   scroll_to_end(buf)
-  return { response_start = response_start, started = false }
+  return entry
+end
+
+local function remove_placeholder(buf, entry)
+  vim.api.nvim_buf_del_extmark(buf, ns, entry.placeholder_hl)
+  vim.api.nvim_buf_del_extmark(buf, ns, entry.mark)
+  modify(buf, function()
+    vim.api.nvim_buf_set_lines(buf, entry.row, entry.row + 1, false, {})
+  end)
 end
 
 --- Stream `text` onto the end of the response, replacing the placeholder on first output.
 function M.append_entry(entry, text)
+  local buf = get_buf()
   if not entry.started then
     -- Models often open with blank lines; don't drop the placeholder for those.
     text = text:gsub("^%s+", "")
@@ -169,47 +252,66 @@ function M.append_entry(entry, text)
       return
     end
     entry.started = true
-    set_lines(get_buf(), entry.response_start, { "" })
+    vim.api.nvim_buf_del_extmark(buf, ns, entry.placeholder_hl)
+    modify(buf, function()
+      vim.api.nvim_buf_set_lines(buf, entry.row, entry.row + 1, false, { "  " })
+    end)
+    mark(buf, entry.row, "text", entry.mark)
   end
 
-  local buf = get_buf()
+  local parts = vim.split(text, "\n", { plain = true })
+  for i = 2, #parts do
+    parts[i] = "  " .. parts[i]
+  end
   follow(buf, function()
     local row = vim.api.nvim_buf_line_count(buf) - 1
     local col = #vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
-    vim.bo[buf].modifiable = true
-    vim.api.nvim_buf_set_text(buf, row, col, row, col, vim.split(text, "\n", { plain = true }))
-    vim.bo[buf].modifiable = false
+    modify(buf, function()
+      vim.api.nvim_buf_set_text(buf, row, col, row, col, parts)
+    end)
+  end)
+end
+
+--- Append a bulleted item to the log, e.g. an edit notice or an error.
+---@param kind "text"|"edit"|"error"
+---@param text string the bulleted first line
+---@param body string[]|nil lines shown indented under it
+function M.append_item(kind, text, body)
+  local buf = get_buf()
+  follow(buf, function()
+    local count = vim.api.nvim_buf_line_count(buf)
+    local last = vim.api.nvim_buf_get_lines(buf, count - 1, count, false)[1]
+    local lines = last == "" and {} or { "" }
+    local first = #lines
+    table.insert(lines, "  " .. text)
+    vim.list_extend(lines, indent(body or {}))
+
+    local row = append_lines(buf, lines) + first
+    mark(buf, row, kind)
+    if kind == "error" then
+      highlight_line(buf, row, "NvlmError")
+    end
   end)
 end
 
 --- Close out a response, noting `err` if the request failed or was cancelled.
 function M.finish_entry(entry, err)
   local buf = get_buf()
-  follow(buf, function()
-    if entry.started then
-      if err then
-        set_lines(buf, vim.api.nvim_buf_line_count(buf), { "", "**error:** " .. err })
-      end
-    else
-      -- No text arrived (an error, or a reply that was only a tool call).
-      set_lines(buf, entry.response_start, err and { "**error:** " .. err } or {})
-    end
-  end)
-end
-
---- Append a block of lines to the log, separated from what's above by a blank line.
-function M.append_block(lines)
-  local buf = get_buf()
-  follow(buf, function()
-    local count = vim.api.nvim_buf_line_count(buf)
-    local last = vim.api.nvim_buf_get_lines(buf, count - 1, count, false)[1]
-    set_lines(buf, count, last == "" and lines or vim.list_extend({ "" }, lines))
-  end)
+  if not entry.started then
+    -- No text arrived (an error, or a reply that was only a tool call).
+    remove_placeholder(buf, entry)
+  end
+  if err then
+    M.append_item("error", "error: " .. err)
+  end
 end
 
 function M.clear()
   if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
-    set_lines(state.buf, 0, {})
+    vim.api.nvim_buf_clear_namespace(state.buf, ns, 0, -1)
+    modify(state.buf, function()
+      vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, {})
+    end)
   end
 end
 

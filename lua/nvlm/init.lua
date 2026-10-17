@@ -31,21 +31,21 @@ end
 local function run_tool(call)
   local fn = call["function"]
   if fn.name ~= "replace_selection" then
-    ui.append_block({ "**✎ unknown tool:** `" .. fn.name .. "`" })
+    ui.append_item("error", "unknown tool: " .. fn.name)
     return "error: unknown tool " .. fn.name
   end
 
   local args = type(fn.arguments) == "string" and vim.json.decode(fn.arguments) or fn.arguments
   local applied, err = edit.replace_selection(args.code or "")
   if not applied then
-    ui.append_block({ "**✎ edit failed:** " .. err })
+    ui.append_item("error", "edit failed: " .. err)
     return "error: " .. err
   end
 
-  local block = { ("**✎ edited `%s`** · `u` there to undo"):format(applied.where), "```" .. applied.filetype }
-  vim.list_extend(block, applied.lines)
-  table.insert(block, "```")
-  ui.append_block(block)
+  local body = { "```" .. applied.filetype }
+  vim.list_extend(body, applied.lines)
+  table.insert(body, "```")
+  ui.append_item("edit", ("Edited `%s` · `u` there to undo"):format(applied.where), body)
   return "Applied. The selection is now " .. applied.where .. " and contains exactly the code you provided."
 end
 
@@ -77,13 +77,11 @@ function M.send(sel, comment)
   vim.list_extend(messages, history)
   table.insert(messages, user_msg)
 
-  local header = { "## " .. comment }
-  if sel then
-    table.insert(header, ("`%s:%d-%d`"):format(sel.filename, sel.start_line, sel.end_line))
-  end
-
   ui.open()
-  local entry = ui.begin_entry(header)
+  local entry = ui.begin_entry(
+    vim.split(comment, "\n", { plain = true }),
+    sel and ("%s:%d-%d"):format(sel.filename, sel.start_line, sel.end_line)
+  )
 
   local chunks, calls = {}, {}
   job = provider.request({
