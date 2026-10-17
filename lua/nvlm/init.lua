@@ -20,12 +20,12 @@ end
 
 --- Entry point for :Lm. With a range, sends the selection plus the comment and
 --- makes it the active selection the model may edit; without one, sends the
---- comment alone as a follow-up in the conversation.
+--- comment alone as a follow-up in the conversation. Bare :Lm opens the chat.
 function M.run(opts)
   local sel = selection.get(opts)
   local comment = vim.trim(opts.args)
   if not sel and comment == "" then
-    vim.notify("nvlm: select some text, or ask a question (:Lm <question>)", vim.log.levels.ERROR)
+    ui.focus_input()
     return
   end
   M.send(sel, comment ~= "" and comment or config.options.default_prompt)
@@ -158,15 +158,22 @@ function M.stop()
   end
 end
 
+function M.running()
+  return job ~= nil
+end
+
 --- Stop tracking the active selection; the model is told on the next message.
+---@return string|nil where the selection that was detached
+---@return string|nil err
 function M.detach()
-  if not edit.has_target() and not edit.is_deleted() then
-    vim.notify("nvlm: no active selection", vim.log.levels.WARN)
-    return
+  local status = edit.status()
+  if not status then
+    return nil, "no active selection"
   end
   edit.clear_target()
   -- Nothing to tell the model if it never had the selection in its history.
   detached = #history > 0
+  return status.where
 end
 
 function M.reset()

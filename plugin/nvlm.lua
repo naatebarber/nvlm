@@ -17,7 +17,10 @@ vim.api.nvim_create_user_command("LmStop", function()
 end, { desc = "Cancel the running LM request" })
 
 vim.api.nvim_create_user_command("LmDetach", function()
-  require("nvlm").detach()
+  local _, err = require("nvlm").detach()
+  if err then
+    vim.notify("nvlm: " .. err, vim.log.levels.WARN)
+  end
 end, { desc = "Stop tracking the active LM selection" })
 
 vim.api.nvim_create_user_command("LmReset", function()

@@ -139,10 +139,20 @@ end
 local function submit()
   local buf = state.input_buf
   local text = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
-  if text ~= "" and require("nvlm").send(nil, text) then
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})
-    update_placeholder(buf)
+  if text == "" then
+    return
   end
+  local accepted
+  if text:sub(1, 1) == "/" then
+    accepted = require("nvlm.commands").run(text)
+  else
+    accepted = require("nvlm").send(nil, text)
+  end
+  if not accepted then
+    return
+  end
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})
+  update_placeholder(buf)
 end
 
 local function get_buf()
@@ -342,6 +352,29 @@ function M.append_item(kind, text, body)
     mark(buf, row, kind)
     if kind == "error" then
       highlight_line(buf, row, "NvlmError")
+    end
+  end)
+end
+
+--- Echo a slash command and its output, Claude Code style.
+---@param line string the command as typed
+---@param output string[]
+---@param is_error boolean|nil
+function M.append_command(line, output, is_error)
+  local buf = get_buf()
+  follow(buf, function()
+    local lines = is_empty(buf) and {} or { "" }
+    local first = #lines
+    table.insert(lines, "  " .. line)
+    for i, text in ipairs(output) do
+      table.insert(lines, (i == 1 and "  ⎿ " or "    ") .. text)
+    end
+
+    local row = append_lines(buf, lines) + first
+    highlight_line(buf, row, "NvlmPrompt")
+    mark(buf, row, "prompt")
+    for r = row + 1, row + #output do
+      highlight_line(buf, r, is_error and "NvlmError" or "NvlmPrompt")
     end
   end)
 end

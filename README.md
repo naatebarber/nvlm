@@ -57,10 +57,26 @@ The conversation is kept until Neovim exits or you run `:LmReset`.
 | Command | Description |
 |---|---|
 | `:'<,'>Lm [question]` | Ask about the selected lines; they become the *active selection*. With no question, asks for a general review. |
+| `:Lm` | Open the chat with no code attached, ready to type. |
 | `:Lm question` | Ask a follow-up without attaching code. |
 | `:LmStop` | Cancel the running request. Partial output is kept. |
 | `:LmDetach` | Stop tracking the active selection, so the model can no longer edit it. |
 | `:LmReset` | Clear the conversation, the log, and the active selection. |
+
+### Chat commands
+
+Type these into the input pane:
+
+| Command | Description |
+|---|---|
+| `/stop` | Cancel the running request |
+| `/detach` | Stop tracking the active selection |
+| `/reset` (alias `/clear`) | Clear the conversation and the log |
+| `/model [name]` | Show the model, or switch to another for this session |
+| `/provider [name]` | List the configured providers, or switch to one |
+| `/help` | List the commands |
+
+While a response is streaming, only `/stop` runs. Other commands stay in the input until the response finishes.
 
 ### Keymaps
 
