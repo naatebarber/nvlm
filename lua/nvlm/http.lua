@@ -14,8 +14,12 @@ function M.stream(url, body, opts, on_line, on_exit)
   if opts.timeout then
     vim.list_extend(cmd, { "-m", tostring(opts.timeout) })
   end
+  -- Env vars named in opts.env can be referenced in header values as {{NAME}} (curl 8.3+).
+  for _, name in ipairs(opts.env or {}) do
+    vim.list_extend(cmd, { "--variable", "%" .. name })
+  end
   for k, v in pairs(opts.headers or {}) do
-    vim.list_extend(cmd, { "-H", k .. ": " .. v })
+    vim.list_extend(cmd, { v:find("{{", 1, true) and "--expand-header" or "-H", k .. ": " .. v })
   end
 
   -- stdout arrives in arbitrary chunks; only hand complete lines to on_line.

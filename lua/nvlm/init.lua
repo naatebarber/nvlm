@@ -29,14 +29,16 @@ end
 
 --- Execute a tool call from the model, log it, and return the result for the model.
 local function run_tool(call)
-  local fn = call["function"]
-  if fn.name ~= "replace_selection" then
-    ui.append_item("error", "unknown tool: " .. fn.name)
-    return "error: unknown tool " .. fn.name
+  if call.name ~= "replace_selection" then
+    ui.append_item("error", "unknown tool: " .. tostring(call.name))
+    return "error: unknown tool " .. tostring(call.name)
+  end
+  if type(call.arguments) ~= "table" or type(call.arguments.code) ~= "string" then
+    ui.append_item("error", "edit failed: missing or malformed `code` argument")
+    return "error: missing or malformed `code` argument"
   end
 
-  local args = type(fn.arguments) == "string" and vim.json.decode(fn.arguments) or fn.arguments
-  local applied, err = edit.replace_selection(args.code or "")
+  local applied, err = edit.replace_selection(call.arguments.code)
   if not applied then
     ui.append_item("error", "edit failed: " .. err)
     return "error: " .. err
@@ -60,10 +62,15 @@ function M.send(sel, comment)
     return false
   end
 
-  local ok, provider = pcall(require, "nvlm.providers." .. cfg.provider)
+  -- A provider entry's `kind` picks the implementation (defaults to its name).
   local provider_cfg = cfg.providers[cfg.provider]
+  local ok, provider = pcall(require, "nvlm.providers." .. (provider_cfg and provider_cfg.kind or cfg.provider))
   if not ok or not provider_cfg then
     vim.notify("nvlm: unknown or unconfigured provider '" .. cfg.provider .. "'", vim.log.levels.ERROR)
+    return false
+  end
+  if not provider_cfg.model then
+    vim.notify("nvlm: set providers." .. cfg.provider .. ".model", vim.log.levels.ERROR)
     return false
   end
 
@@ -109,7 +116,7 @@ function M.send(sel, comment)
       table.insert(history, user_msg)
       table.insert(history, reply)
       for _, call in ipairs(calls) do
-        table.insert(history, { role = "tool", tool_name = call["function"].name, content = run_tool(call) })
+        table.insert(history, { role = "tool", tool_call_id = call.id, name = call.name, content = run_tool(call) })
       end
     end,
   })

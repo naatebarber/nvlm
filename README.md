@@ -23,8 +23,10 @@ It assists your editing; it doesn't try to replace it. For workspace-wide change
 ## Requirements
 
 - Neovim 0.10+
-- `curl`
-- [Ollama](https://ollama.com) running locally, with a model that supports tool calling (needed for edits)
+- `curl` (8.3+ for providers that use an API key)
+- A model that supports tool calling (needed for edits), from either:
+  - [Ollama](https://ollama.com) running locally (the default), or
+  - any OpenAI-compatible API: OpenAI, OpenRouter, LM Studio, llama.cpp, …
 
 ## Install
 
@@ -91,6 +93,20 @@ require("nvlm").setup({
       model = "qwen3.8:27b",
       timeout = 300, -- seconds
     },
+    openai = {
+      kind = "openai",
+      url = "https://api.openai.com/v1",
+      model = "gpt-6-luna",
+      api_key_env = "OPENAI_API_KEY",
+      timeout = 300,
+    },
+    openrouter = {
+      kind = "openai",
+      url = "https://openrouter.ai/api/v1",
+      model = "anthropic/claude-haiku-5.5",
+      api_key_env = "OPENROUTER_API_KEY",
+      timeout = 300,
+    },
   },
   system_prompt = "...", -- see lua/nvlm/config.lua
   default_prompt = "Review this code. Point out bugs or anything that looks wrong.",
@@ -100,6 +116,32 @@ require("nvlm").setup({
   },
 })
 ```
+
+### Providers
+
+`provider` picks an entry from `providers`. Each entry's `kind` picks the implementation: `"ollama"` or `"openai"` (any OpenAI-compatible `/chat/completions` API). If `kind` is left out, the entry's name is used.
+
+Use OpenRouter, with your key in an environment variable of your choice:
+
+```lua
+require("nvlm").setup({
+  provider = "openrouter",
+  providers = { openrouter = { api_key_env = "OPENROUTER_KEY" } },
+})
+```
+
+Add your own OpenAI-compatible server:
+
+```lua
+require("nvlm").setup({
+  provider = "lmstudio",
+  providers = {
+    lmstudio = { kind = "openai", url = "http://localhost:1234/v1", model = "qwen3.8-27b" },
+  },
+})
+```
+
+`api_key_env` names the environment variable that holds the key. Leave it out for servers that need no key. curl reads the key directly from the environment, so it never appears in the process list. Extra request headers can go in `headers = { ... }`.
 
 ### Highlights
 
@@ -115,7 +157,6 @@ These groups are linked by default and can be overridden:
 
 ## Limitations
 
-- Only Ollama is supported for now.
 - Selections are always whole lines.
 - The model doesn't see edits you make to the selection by hand until you run `:Lm` on it again.
 - One request at a time.

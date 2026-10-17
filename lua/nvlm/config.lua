@@ -8,6 +8,20 @@ M.defaults = {
       model = "qwen3.8:27b",
       timeout = 300, -- seconds
     },
+    openai = {
+      kind = "openai",
+      url = "https://api.openai.com/v1",
+      model = "gpt-6-luna",
+      api_key_env = "OPENAI_API_KEY",
+      timeout = 300,
+    },
+    openrouter = {
+      kind = "openai",
+      url = "https://openrouter.ai/api/v1",
+      model = "anthropic/claude-haiku-5.5",
+      api_key_env = "OPENROUTER_API_KEY",
+      timeout = 300,
+    },
   },
   system_prompt = table.concat({
     "You are a concise, expert code reviewer embedded in the user's editor.",
