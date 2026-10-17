@@ -1,33 +1,39 @@
 local M = {}
 
-local state = { buf = nil }
-
-local function get_buf()
-  if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
-    return state.buf
-  end
-  -- Scratch buffer: nofile, bufhidden=hide, so the log survives closing the window.
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(buf, "nvlm://chat")
-  vim.bo[buf].filetype = "markdown"
-  vim.bo[buf].modifiable = false
-  vim.keymap.set("n", "q", "<cmd>close<cr>", { buffer = buf, nowait = true, desc = "Close nvlm window" })
-  for _, lhs in ipairs({ "i", "a", "o", "<CR>" }) do
-    vim.keymap.set("n", lhs, function()
-      require("nvlm").ask()
-    end, { buffer = buf, nowait = true, desc = "Ask nvlm a follow-up" })
-  end
-  state.buf = buf
-  return buf
-end
+-- buf: the read-only chat log; input_buf: the editable prompt below it.
+local state = { buf = nil, input_buf = nil }
 
 local function find_win(buf)
+  if not buf then
+    return nil
+  end
   for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
     if vim.api.nvim_win_get_buf(win) == buf then
       return win
     end
   end
 end
+
+local function close()
+  for _, buf in ipairs({ state.buf, state.input_buf }) do
+    local win = find_win(buf)
+    if win then
+      pcall(vim.api.nvim_win_close, win, false)
+    end
+  end
+end
+
+-- Closing either pane closes the other.
+vim.api.nvim_create_autocmd("WinClosed", {
+  group = vim.api.nvim_create_augroup("nvlm_ui", { clear = true }),
+  callback = function(args)
+    local win = tonumber(args.match)
+    local buf = vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win)
+    if buf and (buf == state.buf or buf == state.input_buf) then
+      vim.schedule(close)
+    end
+  end,
+})
 
 local function is_empty(buf)
   return vim.api.nvim_buf_line_count(buf) == 1 and vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1] == ""
@@ -57,23 +63,82 @@ local function follow(buf, fn)
   end
 end
 
---- Show the chat log in a full-height split on the far right (reused if already open).
-function M.open(cfg)
-  local buf = get_buf()
-  if find_win(buf) then
-    return
+local function submit()
+  local buf = state.input_buf
+  local text = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
+  if text ~= "" and require("nvlm").send(nil, text) then
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})
   end
-  local win = vim.api.nvim_open_win(buf, false, {
-    split = "right",
-    win = -1,
-    width = math.floor(vim.o.columns * cfg.width),
-  })
+end
+
+local function get_buf()
+  if state.buf and vim.api.nvim_buf_is_valid(state.buf) then
+    return state.buf
+  end
+  -- Scratch buffer: nofile, bufhidden=hide, so the log survives closing the window.
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(buf, "nvlm://chat")
+  vim.bo[buf].filetype = "markdown"
+  vim.bo[buf].modifiable = false
+  vim.keymap.set("n", "q", close, { buffer = buf, nowait = true, desc = "Close nvlm" })
+  for _, lhs in ipairs({ "i", "a", "o", "<CR>" }) do
+    vim.keymap.set("n", lhs, M.focus_input, { buffer = buf, nowait = true, desc = "Ask nvlm a follow-up" })
+  end
+  state.buf = buf
+  return buf
+end
+
+local function get_input_buf()
+  if state.input_buf and vim.api.nvim_buf_is_valid(state.input_buf) then
+    return state.input_buf
+  end
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(buf, "nvlm://input")
+  vim.bo[buf].filetype = "markdown"
+  vim.keymap.set({ "n", "i" }, "<CR>", submit, { buffer = buf, desc = "Send to nvlm" })
+  vim.keymap.set("n", "q", close, { buffer = buf, nowait = true, desc = "Close nvlm" })
+  state.input_buf = buf
+  return buf
+end
+
+local function style(win)
   vim.wo[win].wrap = true
   vim.wo[win].linebreak = true
   vim.wo[win].number = false
   vim.wo[win].relativenumber = false
   vim.wo[win].signcolumn = "no"
-  vim.wo[win].winfixwidth = true
+end
+
+--- Show the chat log in a full-height split on the far right with the input
+--- pane below it (each reused if already open).
+function M.open()
+  local cfg = require("nvlm.config").options.ui
+  local win = find_win(get_buf())
+  if not win then
+    win = vim.api.nvim_open_win(state.buf, false, {
+      split = "right",
+      win = -1,
+      width = math.floor(vim.o.columns * cfg.width),
+    })
+    style(win)
+    vim.wo[win].winfixwidth = true
+  end
+  if not find_win(get_input_buf()) then
+    local input_win = vim.api.nvim_open_win(state.input_buf, false, {
+      split = "below",
+      win = win,
+      height = cfg.input_height,
+    })
+    style(input_win)
+    vim.wo[input_win].winfixheight = true
+    vim.wo[input_win].winbar = " nvlm  %#Comment#<CR> send · <C-j> newline"
+  end
+end
+
+function M.focus_input()
+  M.open()
+  vim.api.nvim_set_current_win(find_win(state.input_buf))
+  vim.cmd("startinsert!")
 end
 
 --- Append a new exchange header with a placeholder for the response.
@@ -119,17 +184,26 @@ end
 
 --- Close out a response, noting `err` if the request failed or was cancelled.
 function M.finish_entry(entry, err)
-  if not err then
-    return
-  end
   local buf = get_buf()
   follow(buf, function()
-    local msg = "**error:** " .. err
     if entry.started then
-      set_lines(buf, vim.api.nvim_buf_line_count(buf), { "", msg })
+      if err then
+        set_lines(buf, vim.api.nvim_buf_line_count(buf), { "", "**error:** " .. err })
+      end
     else
-      set_lines(buf, entry.response_start, { msg })
+      -- No text arrived (an error, or a reply that was only a tool call).
+      set_lines(buf, entry.response_start, err and { "**error:** " .. err } or {})
     end
+  end)
+end
+
+--- Append a block of lines to the log, separated from what's above by a blank line.
+function M.append_block(lines)
+  local buf = get_buf()
+  follow(buf, function()
+    local count = vim.api.nvim_buf_line_count(buf)
+    local last = vim.api.nvim_buf_get_lines(buf, count - 1, count, false)[1]
+    set_lines(buf, count, last == "" and lines or vim.list_extend({ "" }, lines))
   end)
 end
 
