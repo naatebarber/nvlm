@@ -15,8 +15,8 @@ It assists your editing; it doesn't try to replace it. For workspace-wide change
 │                              │                              │
 │                              │ ⏺ Edited stats.py:3-7        │
 │                              ├──────────────────────────────┤
-│                              │ nvlm  <CR> send · <C-j> nl   │
-│                              │ _                            │
+│                              │ nvlm · stats.py:3-7          │
+│                              │ Ask nvlm…                    │
 └──────────────────────────────┴──────────────────────────────┘
 ```
 
@@ -59,6 +59,7 @@ The conversation is kept until Neovim exits or you run `:LmReset`.
 | `:'<,'>Lm [question]` | Ask about the selected lines; they become the *active selection*. With no question, asks for a general review. |
 | `:Lm question` | Ask a follow-up without attaching code. |
 | `:LmStop` | Cancel the running request. Partial output is kept. |
+| `:LmDetach` | Stop tracking the active selection, so the model can no longer edit it. |
 | `:LmReset` | Clear the conversation, the log, and the active selection. |
 
 ### Keymaps
@@ -87,6 +88,8 @@ The plugin follows the active selection live as you work:
 - The input pane's top bar shows where the selection is now (`file.py:7-11`). It adds `modified` if the contents differ from what the model last saw, or says `selection deleted` if the lines are gone.
 
 Nothing is sent to the model until your next message. Then, if the selection changed or moved since the model last saw it (you edited it, undid its edit, or added lines above it), the current code goes along with your message. The log marks this as `⎿ file.py:7-11 (updated)`. If the selection was deleted, the model is told, and it can no longer edit. If a request fails or is cancelled, the pending update is kept for the next message.
+
+`:LmDetach` drops the active selection when you're done with it. The sign-column bar and the status go away, and the model is told on your next message.
 
 The model decides when to edit. Asking a question gets an answer, and asking for a change gets an edit. Saying "don't change anything" works as you'd expect.
 

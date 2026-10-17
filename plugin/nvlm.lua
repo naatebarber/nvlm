@@ -16,6 +16,10 @@ vim.api.nvim_create_user_command("LmStop", function()
   require("nvlm").stop()
 end, { desc = "Cancel the running LM request" })
 
+vim.api.nvim_create_user_command("LmDetach", function()
+  require("nvlm").detach()
+end, { desc = "Stop tracking the active LM selection" })
+
 vim.api.nvim_create_user_command("LmReset", function()
   require("nvlm").reset()
 end, { desc = "Clear the LM chat history and log" })

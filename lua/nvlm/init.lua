@@ -9,6 +9,8 @@ local M = {}
 -- Chat history (user/assistant/tool messages) for this Neovim session.
 local history = {}
 local job = nil
+-- Set by :LmDetach until the model has been told about it.
+local detached = false
 
 edit.on_status(ui.set_status)
 
@@ -80,13 +82,18 @@ function M.send(sel, comment)
   -- it changed (or was deleted) since the model last saw it.
   local content, ref
   local deleted = not sel and edit.is_deleted()
+  local was_detached = not sel and detached
   if sel then
     edit.set_target(sel)
+    detached = false
     content = prompt.user_message(sel, comment)
     ref = ("%s:%d-%d"):format(sel.filename, sel.start_line, sel.end_line)
   elseif deleted then
     content = prompt.selection_deleted .. "\n\n" .. comment
     ref = "selection deleted"
+  elseif was_detached then
+    content = prompt.selection_detached .. "\n\n" .. comment
+    ref = "selection detached"
   elseif edit.changed() then
     local snap = edit.snapshot()
     edit.sending(snap)
@@ -126,6 +133,8 @@ function M.send(sel, comment)
       end
       if deleted then
         edit.clear_target()
+      elseif was_detached then
+        detached = false
       else
         edit.confirm()
       end
@@ -149,9 +158,21 @@ function M.stop()
   end
 end
 
+--- Stop tracking the active selection; the model is told on the next message.
+function M.detach()
+  if not edit.has_target() and not edit.is_deleted() then
+    vim.notify("nvlm: no active selection", vim.log.levels.WARN)
+    return
+  end
+  edit.clear_target()
+  -- Nothing to tell the model if it never had the selection in its history.
+  detached = #history > 0
+end
+
 function M.reset()
   M.stop()
   history = {}
+  detached = false
   edit.clear_target()
   ui.clear()
 end

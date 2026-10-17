@@ -42,5 +42,6 @@ function M.selection_update(snap, comment)
 end
 
 M.selection_deleted = "[Editor note: the user deleted the selected code; it can no longer be edited.]"
+M.selection_detached = "[Editor note: the user detached the selected code from this chat; it can no longer be edited.]"
 
 return M

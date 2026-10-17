@@ -124,11 +124,24 @@ local function follow(buf, fn)
   end
 end
 
+local placeholder_ns = vim.api.nvim_create_namespace("nvlm_placeholder")
+
+local function update_placeholder(buf)
+  vim.api.nvim_buf_clear_namespace(buf, placeholder_ns, 0, -1)
+  if is_empty(buf) then
+    vim.api.nvim_buf_set_extmark(buf, placeholder_ns, 0, 0, {
+      virt_text = { { "Ask nvlm…", "Comment" } },
+      virt_text_pos = "overlay",
+    })
+  end
+end
+
 local function submit()
   local buf = state.input_buf
   local text = vim.trim(table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n"))
   if text ~= "" and require("nvlm").send(nil, text) then
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, {})
+    update_placeholder(buf)
   end
 end
 
@@ -161,6 +174,14 @@ local function get_input_buf()
   vim.bo[buf].filetype = "markdown"
   vim.keymap.set({ "n", "i" }, "<CR>", submit, { buffer = buf, desc = "Send to nvlm" })
   vim.keymap.set("n", "q", close, { buffer = buf, nowait = true, desc = "Close nvlm" })
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    group = group,
+    buffer = buf,
+    callback = function()
+      update_placeholder(buf)
+    end,
+  })
+  update_placeholder(buf)
   state.input_buf = buf
   return buf
 end
@@ -178,7 +199,7 @@ local function winbar()
       bar = bar .. " · " .. where
     end
   end
-  return bar .. "  %#Comment#<CR> send · <C-j> newline"
+  return bar
 end
 
 ---@param status table|nil from nvlm.edit.status
