@@ -32,8 +32,6 @@ M.defaults = {
     "When the user asks you to change the selected code, call replace_selection with the complete",
     "new code for the selection instead of only describing the change; otherwise just answer.",
   }, " "),
-  -- Used when :Lm is called without a comment.
-  default_prompt = "Review this code. Point out bugs or anything that looks wrong.",
   ui = {
     width = 0.3, -- fraction of the editor width
     input_height = 5, -- lines

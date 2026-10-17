@@ -56,7 +56,7 @@ The conversation is kept until Neovim exits or you run `:LmReset`.
 
 | Command | Description |
 |---|---|
-| `:'<,'>Lm [question]` | Ask about the selected lines; they become the *active selection*. With no question, asks for a general review. |
+| `:'<,'>Lm [question]` | Ask about the selected lines; they become the *active selection*. With no question, attaches them and opens the chat, and they're sent with your next message. |
 | `:Lm` | Open the chat with no code attached, ready to type. |
 | `:Lm question` | Ask a follow-up without attaching code. |
 | `:LmStop` | Cancel the running request. Partial output is kept. |
@@ -138,7 +138,6 @@ require("nvlm").setup({
     },
   },
   system_prompt = "...", -- see lua/nvlm/config.lua
-  default_prompt = "Review this code. Point out bugs or anything that looks wrong.",
   ui = {
     width = 0.3,      -- fraction of the editor width
     input_height = 5, -- lines

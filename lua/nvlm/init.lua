@@ -18,17 +18,22 @@ function M.setup(opts)
   config.setup(opts)
 end
 
---- Entry point for :Lm. With a range, sends the selection plus the comment and
---- makes it the active selection the model may edit; without one, sends the
---- comment alone as a follow-up in the conversation. Bare :Lm opens the chat.
+--- Entry point for :Lm. With a range, the lines become the active selection the
+--- model may edit, sent along with the comment, or just attached for the next
+--- message if there's no comment. Without a range, the comment is sent alone as
+--- a follow-up. With neither, it opens the chat.
 function M.run(opts)
   local sel = selection.get(opts)
   local comment = vim.trim(opts.args)
-  if not sel and comment == "" then
-    ui.focus_input()
+  if comment ~= "" then
+    M.send(sel, comment)
     return
   end
-  M.send(sel, comment ~= "" and comment or config.options.default_prompt)
+  if sel then
+    edit.set_target(sel)
+    detached = false
+  end
+  ui.focus_input()
 end
 
 --- Execute a tool call from the model, log it, and return the result for the model.
@@ -81,10 +86,13 @@ function M.send(sel, comment)
   -- Build the message, bringing the model up to date on the active selection if
   -- it changed (or was deleted) since the model last saw it.
   local content, ref
+  if not sel and edit.is_deleted() and edit.unseen() then
+    edit.clear_target() -- deleted before the model ever saw it: nothing to tell
+  end
   local deleted = not sel and edit.is_deleted()
   local was_detached = not sel and detached
   if sel then
-    edit.set_target(sel)
+    edit.set_target(sel, true)
     detached = false
     content = prompt.user_message(sel, comment)
     ref = ("%s:%d-%d"):format(sel.filename, sel.start_line, sel.end_line)
@@ -94,6 +102,12 @@ function M.send(sel, comment)
   elseif was_detached then
     content = prompt.selection_detached .. "\n\n" .. comment
     ref = "selection detached"
+  elseif edit.unseen() then
+    -- Attached by a bare :'<,'>Lm; this is the model's first look at it.
+    local snap = edit.snapshot()
+    edit.sending(snap)
+    content = prompt.user_message(snap, comment)
+    ref = ("%s:%d-%d"):format(snap.filename, snap.start_line, snap.end_line)
   elseif edit.changed() then
     local snap = edit.snapshot()
     edit.sending(snap)
@@ -170,9 +184,9 @@ function M.detach()
   if not status then
     return nil, "no active selection"
   end
+  -- Nothing to tell the model if it never saw the selection.
+  detached = not edit.unseen()
   edit.clear_target()
-  -- Nothing to tell the model if it never had the selection in its history.
-  detached = #history > 0
   return status.where
 end
 

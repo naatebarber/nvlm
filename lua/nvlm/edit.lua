@@ -135,7 +135,8 @@ function M.status()
   end
   return {
     where = ("%s:%d-%d"):format(snap.filename, snap.start_line, snap.end_line),
-    state = M.changed(true) and "modified" or "ok",
+    -- Attached but not sent yet: nothing for the model to be out of date on.
+    state = (target.sent or target.seen) and M.changed(true) and "modified" or "ok",
   }
 end
 
@@ -178,15 +179,16 @@ function M.on_status(fn)
   listener = fn
 end
 
----@param sel table from nvlm.selection.get; its lines are being sent to the model
-function M.set_target(sel)
+---@param sel table from nvlm.selection.get
+---@param sending boolean|nil its lines are being sent to the model now (vs. only attached)
+function M.set_target(sel, sending)
   M.clear_target()
   target = {
     buf = sel.bufnr,
     id = set_mark(sel.bufnr, sel.start_line - 1, sel.end_line - 1),
     filename = sel.filename,
     filetype = sel.filetype,
-    sent = view(sel),
+    sent = sending and view(sel) or nil,
   }
   watch(sel.bufnr)
   refresh()
@@ -204,6 +206,11 @@ end
 
 function M.has_target()
   return range() ~= nil
+end
+
+--- Whether there is a target the model has never seen (attached, not yet sent).
+function M.unseen()
+  return target ~= nil and not target.seen and not target.sent
 end
 
 --- Whether there is a target whose lines have been deleted.
