@@ -13,17 +13,34 @@ function M.setup(opts)
   config.setup(opts)
 end
 
+--- Entry point for :Lm. With a range, sends the selection plus the comment;
+--- without one, sends the comment alone as a follow-up in the conversation.
 function M.run(opts)
+  local sel = selection.get(opts)
+  local comment = vim.trim(opts.args)
+  if not sel and comment == "" then
+    vim.notify("nvlm: select some text, or ask a question (:Lm <question>)", vim.log.levels.ERROR)
+    return
+  end
+  M.send(sel, comment ~= "" and comment or config.options.default_prompt)
+end
+
+--- Prompt for a follow-up question (used by the chat window keymaps).
+function M.ask()
+  vim.ui.input({ prompt = "nvlm> " }, function(input)
+    if input and vim.trim(input) ~= "" then
+      M.send(nil, vim.trim(input))
+    end
+  end)
+end
+
+---@param sel table|nil selection from nvlm.selection.get, or nil for a plain follow-up
+---@param comment string
+function M.send(sel, comment)
   local cfg = config.options
 
   if job then
     vim.notify("nvlm: a request is already running (:LmStop to cancel)", vim.log.levels.WARN)
-    return
-  end
-
-  local sel = selection.get(opts)
-  if not sel then
-    vim.notify("nvlm: select some text first (e.g. V then :Lm ...)", vim.log.levels.ERROR)
     return
   end
 
@@ -34,18 +51,19 @@ function M.run(opts)
     return
   end
 
-  local comment = vim.trim(opts.args) ~= "" and opts.args or cfg.default_prompt
-  local user_msg = { role = "user", content = prompt.user_message(sel, comment) }
+  local user_msg = { role = "user", content = sel and prompt.user_message(sel, comment) or comment }
 
   local messages = { { role = "system", content = cfg.system_prompt } }
   vim.list_extend(messages, history)
   table.insert(messages, user_msg)
 
+  local header = { "## " .. comment }
+  if sel then
+    table.insert(header, ("`%s:%d-%d`"):format(sel.filename, sel.start_line, sel.end_line))
+  end
+
   ui.open(cfg.ui)
-  local entry = ui.begin_entry({
-    "## " .. comment,
-    ("`%s:%d-%d`"):format(sel.filename, sel.start_line, sel.end_line),
-  })
+  local entry = ui.begin_entry(header)
 
   local chunks = {}
   job = provider.request(messages, provider_cfg, function(text)

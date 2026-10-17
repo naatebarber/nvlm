@@ -12,6 +12,11 @@ local function get_buf()
   vim.bo[buf].filetype = "markdown"
   vim.bo[buf].modifiable = false
   vim.keymap.set("n", "q", "<cmd>close<cr>", { buffer = buf, nowait = true, desc = "Close nvlm window" })
+  for _, lhs in ipairs({ "i", "a", "o", "<CR>" }) do
+    vim.keymap.set("n", lhs, function()
+      require("nvlm").ask()
+    end, { buffer = buf, nowait = true, desc = "Ask nvlm a follow-up" })
+  end
   state.buf = buf
   return buf
 end
