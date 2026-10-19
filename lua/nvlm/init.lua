@@ -2,6 +2,7 @@ local config = require("nvlm.config")
 local edit = require("nvlm.edit")
 local prompt = require("nvlm.prompt")
 local selection = require("nvlm.selection")
+local tools = require("nvlm.tools")
 local ui = require("nvlm.ui")
 
 local M = {}
@@ -11,6 +12,10 @@ local history = {}
 local job = nil
 -- Set by :LmDetach until the model has been told about it.
 local detached = false
+-- Where a rangeless :Lm was run, { bufnr, line }, until that file context is sent.
+local cursor = nil
+-- The file context the model last saw, so an unchanged file isn't resent.
+local context_seen = nil
 
 edit.on_status(ui.set_status)
 
@@ -20,11 +25,17 @@ end
 
 --- Entry point for :Lm. With a range, the lines become the active selection the
 --- model may edit, sent along with the comment, or just attached for the next
---- message if there's no comment. Without a range, the comment is sent alone as
---- a follow-up. With neither, it opens the chat.
+--- message if there's no comment. Without a range, the current file (around the
+--- cursor) goes along as read-only context, with the comment or with the next
+--- message typed into the chat.
 function M.run(opts)
   local sel = selection.get(opts)
   local comment = vim.trim(opts.args)
+  if sel then
+    cursor = nil
+  elseif config.options.context.enabled and vim.bo.buftype == "" then
+    cursor = { bufnr = vim.api.nvim_get_current_buf(), line = vim.api.nvim_win_get_cursor(0)[1] }
+  end
   if comment ~= "" then
     M.send(sel, comment)
     return
@@ -36,28 +47,64 @@ function M.run(opts)
   ui.focus_input()
 end
 
---- Execute a tool call from the model, log it, and return the result for the model.
-local function run_tool(call)
-  if call.name ~= "replace_selection" then
-    ui.append_item("error", "unknown tool: " .. tostring(call.name))
-    return "error: unknown tool " .. tostring(call.name)
-  end
-  if type(call.arguments) ~= "table" or type(call.arguments.code) ~= "string" then
-    ui.append_item("error", "edit failed: missing or malformed `code` argument")
-    return "error: missing or malformed `code` argument"
-  end
-
-  local applied, err = edit.replace_selection(call.arguments.code)
-  if not applied then
-    ui.append_item("error", "edit failed: " .. err)
-    return "error: " .. err
+--- Run one round of the exchange: send the history (plus `ctx.user_msg` on the
+--- first round), then run any tools the model called and go another round with
+--- their results, until it answers without tools or a tool ends the turn.
+---@param ctx table { provider, provider_cfg, user_msg, settle(err) }
+---@param n integer round number, from 1
+---@param entry table the log entry for this round's response
+local function round(ctx, n, entry)
+  local cfg = config.options
+  local messages = { { role = "system", content = cfg.system_prompt } }
+  vim.list_extend(messages, history)
+  if n == 1 then
+    table.insert(messages, ctx.user_msg)
   end
 
-  local body = { "```" .. applied.filetype }
-  vim.list_extend(body, applied.lines)
-  table.insert(body, "```")
-  ui.append_item("edit", ("Edited `%s` · `u` there to undo"):format(applied.where), body)
-  return "Applied. The selection is now " .. applied.where .. " and contains exactly the code you provided."
+  local chunks, calls = {}, {}
+  job = ctx.provider.request({ messages = messages, tools = tools.defs() }, ctx.provider_cfg, {
+    on_delta = function(text)
+      table.insert(chunks, text)
+      ui.append_entry(entry, text)
+    end,
+    on_tool_call = function(call)
+      table.insert(calls, call)
+    end,
+    on_done = function(err)
+      job = nil
+      ui.finish_entry(entry, err)
+      if n == 1 then
+        ctx.settle(err)
+      end
+      -- Only completed responses become part of the conversation.
+      if err then
+        return
+      end
+      if n == 1 then
+        table.insert(history, ctx.user_msg)
+      end
+      local reply = { role = "assistant", content = table.concat(chunks) }
+      if #calls > 0 then
+        reply.tool_calls = calls
+      end
+      table.insert(history, reply)
+
+      local wait = false
+      for _, call in ipairs(calls) do
+        local result, ends_turn = tools.run(call)
+        table.insert(history, { role = "tool", tool_call_id = call.id, name = call.name, content = result })
+        wait = wait or ends_turn
+      end
+      if #calls == 0 or wait then
+        return
+      end
+      if n >= cfg.tools.max_rounds then
+        ui.append_item("error", ("stopped after %d rounds of tool calls; send a message to continue"):format(n))
+        return
+      end
+      round(ctx, n + 1, ui.begin_entry())
+    end,
+  })
 end
 
 ---@param sel table|nil selection from nvlm.selection.get, or nil for a plain follow-up
@@ -116,35 +163,38 @@ function M.send(sel, comment)
   else
     content = comment
   end
+
+  -- Put the file the user is in first, unless the model already has it as is.
+  local refs = { ref }
+  local file = cursor and selection.context(cursor.bufnr, cursor.line, cfg.context.max_lines)
+  local file_key = file and { bufnr = file.bufnr, tick = file.tick, start_line = file.start_line, end_line = file.end_line }
+  if file then
+    local where = ("%s:%d"):format(file.filename, file.cursor_line)
+    if vim.deep_equal(file_key, context_seen) then
+      content = prompt.cursor_note(file) .. "\n\n" .. content
+    else
+      content = prompt.file_context(file) .. "\n\n" .. content
+      local whole = file.start_line == 1 and file.end_line == file.total
+      where = where .. (whole and " (whole file)" or (" (lines %d-%d)"):format(file.start_line, file.end_line))
+    end
+    table.insert(refs, 1, where)
+  end
   local user_msg = { role = "user", content = content }
 
-  local messages = { { role = "system", content = cfg.system_prompt } }
-  vim.list_extend(messages, history)
-  table.insert(messages, user_msg)
-
   ui.open()
-  local entry = ui.begin_entry(vim.split(comment, "\n", { plain = true }), ref)
-
-  local chunks, calls = {}, {}
-  job = provider.request({
-    messages = messages,
-    tools = edit.has_target() and edit.tools or nil,
-  }, provider_cfg, {
-    on_delta = function(text)
-      table.insert(chunks, text)
-      ui.append_entry(entry, text)
-    end,
-    on_tool_call = function(call)
-      table.insert(calls, call)
-    end,
-    on_done = function(err)
-      job = nil
-      ui.finish_entry(entry, err)
-      -- Only completed exchanges become part of the conversation.
+  local entry = ui.begin_entry(vim.split(comment, "\n", { plain = true }), refs)
+  round({
+    provider = provider,
+    provider_cfg = provider_cfg,
+    user_msg = user_msg,
+    -- Settle what the model now knows about the selection once the first response ends.
+    settle = function(err)
       if err then
-        edit.abort()
+        edit.abort() -- and `cursor` stays pending for the next message
         return
       end
+      cursor = nil
+      context_seen = file_key or context_seen
       if deleted then
         edit.clear_target()
       elseif was_detached then
@@ -152,17 +202,8 @@ function M.send(sel, comment)
       else
         edit.confirm()
       end
-      local reply = { role = "assistant", content = table.concat(chunks) }
-      if #calls > 0 then
-        reply.tool_calls = calls
-      end
-      table.insert(history, user_msg)
-      table.insert(history, reply)
-      for _, call in ipairs(calls) do
-        table.insert(history, { role = "tool", tool_call_id = call.id, name = call.name, content = run_tool(call) })
-      end
     end,
-  })
+  }, 1, entry)
   return true
 end
 
@@ -194,6 +235,8 @@ function M.reset()
   M.stop()
   history = {}
   detached = false
+  cursor = nil
+  context_seen = nil
   edit.clear_target()
   ui.clear()
 end

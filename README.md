@@ -57,8 +57,8 @@ The conversation is kept until Neovim exits or you run `:LmReset`.
 | Command | Description |
 |---|---|
 | `:'<,'>Lm [question]` | Ask about the selected lines; they become the *active selection*. With no question, attaches them and opens the chat, and they're sent with your next message. |
-| `:Lm` | Open the chat with no code attached, ready to type. |
-| `:Lm question` | Ask a follow-up without attaching code. |
+| `:Lm` | Open the chat, ready to type. The current file goes along with your next message as context (see [File context](#file-context)). |
+| `:Lm question` | Ask about the file you're in, with the cursor's surroundings as context. |
 | `:LmStop` | Cancel the running request. Partial output is kept. |
 | `:LmDetach` | Stop tracking the active selection, so the model can no longer edit it. |
 | `:LmReset` | Clear the conversation, the log, and the active selection. |
@@ -109,6 +109,51 @@ Nothing is sent to the model until your next message. Then, if the selection cha
 
 The model decides when to edit. Asking a question gets an answer, and asking for a change gets an edit. Saying "don't change anything" works as you'd expect.
 
+## File context
+
+Running `:Lm` without a range, from a line in some file, sends that file along as read-only context, with the cursor line marked. If the file is up to `context.max_lines` long (300 by default), the whole file goes. Otherwise the model gets that many lines centred on the cursor and can read the rest with `read_file`. The log shows what went:
+
+```
+> what does this do?
+  ⎿ lua/nvlm/ui.lua:212 (lines 63-362)
+```
+
+The file is only sent again if it changed or you moved far enough for the window to shift. Otherwise the model is just told where the cursor is now. Messages typed into the chat pane are follow-ups and add no file context. The exception is the first message after a bare `:Lm`, which carries the file you opened the chat from.
+
+This context can't be edited. To let the model change code, select it (`:'<,'>Lm`). Disable file context with `context = { enabled = false }`.
+
+## Tools
+
+One selection isn't always enough context, so the model can also look around on its own. It calls tools, sees the results, and keeps going until it has an answer. Each call shows up in the log:
+
+```
+> where else is this called?
+  ⎿ edit.lua:271-297
+
+⏺ Search `replace_selection`
+  ⎿ 3 matches
+
+⏺ Read `lua/nvlm/tools.lua:150-170`
+  ⎿ 21 lines
+
+⏺ It's only called by the replace_selection tool (tools.lua:165)…
+```
+
+| Tool | What it does |
+|---|---|
+| `replace_selection` | Rewrites the active selection (see above) |
+| `detach_selection` | Drops the active selection once the conversation has moved on to other code |
+| `read_file` | Reads a file, or a range of its lines. Open buffers are read with their unsaved changes. |
+| `list_files` | Lists files, optionally under a directory or matching a glob, skipping gitignored files |
+| `search` | Searches files for a regex, e.g. to find where a function is called |
+| `ask_user` | Asks you a clarifying question (marked `?` in the log). It ends the model's turn, and your next message is the answer. |
+
+So you can say "find the config loader and check it handles a missing file" or "how does this compare to the version in `utils/old.py`?"
+
+The read tools only see files inside Neovim's working directory (`:pwd`); paths outside it, including through symlinks, are refused. `list_files` and `search` use [ripgrep](https://github.com/BurntSushi/ripgrep) if it's installed and fall back to `git`. Turn the read tools off with `tools = { read = false }`.
+
+A message gets at most `tools.max_rounds` model responses (default 10). If the model is still calling tools after that, it stops, and your next message lets it continue. `:LmStop` cancels at any point. Tool calls that already ran stay in the conversation.
+
 ## Configuration
 
 Defaults:
@@ -138,6 +183,14 @@ require("nvlm").setup({
     },
   },
   system_prompt = "...", -- see lua/nvlm/config.lua
+  context = {
+    enabled = true,  -- send the current file with a rangeless :Lm
+    max_lines = 300, -- whole file up to this, else this many lines around the cursor
+  },
+  tools = {
+    read = true,     -- read_file, list_files and search, confined to the working directory
+    max_rounds = 10, -- model responses per message before it has to stop and wait
+  },
   ui = {
     width = 0.3,      -- fraction of the editor width
     input_height = 5, -- lines
@@ -181,6 +234,8 @@ These groups are linked by default and can be overridden:
 | `NvlmPending` | `Comment` | The "thinking…" placeholder |
 | `NvlmBullet` | `Normal` | Response bullets |
 | `NvlmEdit` | `DiagnosticOk` | Edit bullets |
+| `NvlmTool` | `Special` | Tool call bullets |
+| `NvlmQuestion` | `DiagnosticInfo` | The `?` on the model's questions |
 | `NvlmError` | `DiagnosticError` | Errors |
 | `NvlmSelection` | `DiagnosticInfo` | Sign-column bar on the active selection |
 | `NvlmModified` | `DiagnosticWarn` | `modified` in the input pane's top bar |
@@ -189,3 +244,5 @@ These groups are linked by default and can be overridden:
 
 - Selections are always whole lines.
 - One request at a time.
+- Only the active selection can be edited. The model can read the rest of the project but can't change it.
+- `list_files` and `search` run synchronously, so a search over a very large project can freeze the editor briefly (for up to 10 seconds).

@@ -13,6 +13,8 @@ local markers = {
   pending = { "⏺", "NvlmPending" },
   text = { "⏺", "NvlmBullet" },
   edit = { "⏺", "NvlmEdit" },
+  tool = { "⏺", "NvlmTool" },
+  question = { "?", "NvlmQuestion" },
   error = { "⏺", "NvlmError" },
 }
 
@@ -22,6 +24,8 @@ local function define_highlights()
     NvlmPending = "Comment",
     NvlmBullet = "Normal",
     NvlmEdit = "DiagnosticOk",
+    NvlmTool = "Special",
+    NvlmQuestion = "DiagnosticInfo",
     NvlmError = "DiagnosticError",
     NvlmSelection = "DiagnosticInfo",
     NvlmModified = "DiagnosticWarn",
@@ -263,36 +267,48 @@ function M.focus_input()
 end
 
 --- Append the user's prompt (and the selection it refers to) with a placeholder
---- for the response.
----@param prompt_lines string[]
----@param ref string|nil e.g. "file.py:3-7"
+--- for the response. Without a prompt, only the placeholder: the model is
+--- continuing after its tool calls.
+---@param prompt_lines string[]|nil
+---@param refs string[]|nil what it refers to, e.g. { "file.py:3-7" }
 ---@return table entry handle for append_entry / finish_entry
-function M.begin_entry(prompt_lines, ref)
+function M.begin_entry(prompt_lines, refs)
   local buf = get_buf()
-  local header = indent(prompt_lines)
-  if ref then
-    table.insert(header, "  ⎿ " .. ref)
-  end
-
   local lines = is_empty(buf) and {} or { "" }
   local first = #lines
-  vim.list_extend(lines, header)
-  vim.list_extend(lines, { "", "  thinking…" })
-
-  local start = append_lines(buf, lines)
-  for row = start + first, start + first + #header - 1 do
-    highlight_line(buf, row, "NvlmPrompt")
+  local header = prompt_lines and indent(prompt_lines) or {}
+  for _, ref in ipairs(refs or {}) do
+    table.insert(header, "  ⎿ " .. ref)
   end
-  mark(buf, start + first, "prompt")
+  vim.list_extend(lines, header)
+  if #header > 0 then
+    table.insert(lines, "")
+  end
+  table.insert(lines, "  thinking…")
 
-  local row = start + #lines - 1
-  local entry = {
-    row = row,
-    started = false,
-    mark = mark(buf, row, "pending"),
-    placeholder_hl = highlight_line(buf, row, "NvlmPending"),
-  }
-  scroll_to_end(buf)
+  local entry
+  local function add()
+    local start = append_lines(buf, lines)
+    for row = start + first, start + first + #header - 1 do
+      highlight_line(buf, row, "NvlmPrompt")
+    end
+    if #header > 0 then
+      mark(buf, start + first, "prompt")
+    end
+    local row = start + #lines - 1
+    entry = {
+      row = row,
+      started = false,
+      mark = mark(buf, row, "pending"),
+      placeholder_hl = highlight_line(buf, row, "NvlmPending"),
+    }
+  end
+  if prompt_lines then
+    add()
+    scroll_to_end(buf)
+  else
+    follow(buf, add)
+  end
   return entry
 end
 
@@ -334,8 +350,8 @@ function M.append_entry(entry, text)
   end)
 end
 
---- Append a bulleted item to the log, e.g. an edit notice or an error.
----@param kind "text"|"edit"|"error"
+--- Append a bulleted item to the log, e.g. an edit notice, a tool call, or an error.
+---@param kind "text"|"edit"|"tool"|"question"|"error"
 ---@param text string the bulleted first line
 ---@param body string[]|nil lines shown indented under it
 function M.append_item(kind, text, body)

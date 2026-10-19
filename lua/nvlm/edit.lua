@@ -17,28 +17,6 @@ local listener = function(_) end
 -- Bumped per target so stale buffer watchers detach themselves.
 local generation = 0
 
-M.tools = {
-  {
-    type = "function",
-    ["function"] = {
-      name = "replace_selection",
-      description = table.concat({
-        "Replace the user's selected lines in their editor with new code.",
-        "Provide the complete replacement for the whole selection (not a diff or a fragment),",
-        "keeping the original indentation, without line-number prefixes or markdown fences.",
-        "Only call this when the user asks for a change.",
-      }, " "),
-      parameters = {
-        type = "object",
-        properties = {
-          code = { type = "string", description = "The full replacement text for the selected lines." },
-        },
-        required = { "code" },
-      },
-    },
-  },
-}
-
 local function set_mark(buf, start_row, end_row, id)
   local last = vim.api.nvim_buf_get_lines(buf, end_row, end_row + 1, false)[1] or ""
   return vim.api.nvim_buf_set_extmark(buf, ns, start_row, 0, {
